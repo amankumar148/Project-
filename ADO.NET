@@ -1,0 +1,64 @@
+using System.Data.SqlClient;
+using System.Data;
+
+[Authorize]
+[HttpPost("create")]
+public IActionResult CreateStudent([FromBody] StudentCreateModel model)
+{
+    // Connection string from appsettings.json
+    string connectionString = _config.GetConnectionString("DefaultConnection");
+    
+    // Use a transaction for data integrity across multiple tables
+    using (SqlConnection connection = new SqlConnection(connectionString))
+    {
+        connection.Open();
+        SqlTransaction transaction = connection.BeginTransaction();
+
+        try
+        {
+            // 1. Save to Student_Mast (SQL Adapter)
+            int studentId;
+            using (SqlCommand cmd = new SqlCommand(
+                "INSERT INTO Student_Mast (Name, Age, DOB, Address, StateID, PhoneNumber, Photos) " +
+                "VALUES (@Name, @Age, @DOB, @Address, @StateID, @PhoneNumber, @Photos); " +
+                "SELECT SCOPE_IDENTITY();", connection, transaction))
+            {
+                cmd.Parameters.AddWithValue("@Name", model.Name);
+                cmd.Parameters.AddWithValue("@Age", model.Age);
+                cmd.Parameters.AddWithValue("@DOB", model.DOB);
+                cmd.Parameters.AddWithValue("@Address", (object)model.Address ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("@StateID", model.StateID);
+                cmd.Parameters.AddWithValue("@PhoneNumber", (object)model.PhoneNumber ?? DBNull.Value);
+                cmd.Parameters.AddWithValue("@Photos", (object)model.Photos ?? DBNull.Value); // JSON string
+
+                // ExecuteScalar returns the new StudentID
+                studentId = Convert.ToInt32(cmd.ExecuteScalar());
+            }
+
+            // 2. Save to Student_Detail (SQL Adapter Loop)
+            foreach (var subject in model.Subjects)
+            {
+                using (SqlCommand cmd = new SqlCommand(
+                    "INSERT INTO Student_Detail (StudentID, SubjectName, Marks) VALUES (@StudentID, @SubjectName, @Marks)", 
+                    connection, transaction))
+                {
+                    cmd.Parameters.AddWithValue("@StudentID", studentId);
+                    cmd.Parameters.AddWithValue("@SubjectName", subject.SubjectName);
+                    cmd.Parameters.AddWithValue("@Marks", (object)subject.Marks ?? DBNull.Value);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+
+            // 3. Commit Transaction
+            transaction.Commit();
+            return Ok(new { StudentID = studentId });
+        }
+        catch (Exception ex)
+        {
+            // 4. Rollback on error
+            transaction.Rollback();
+            // Log error (ex)
+            return StatusCode(500, new { message = "Database error during student creation.", error = ex.Message });
+        }
+    }
+}
